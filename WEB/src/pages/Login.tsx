@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Heart, Phone, ArrowRight, Shield } from "lucide-react";
+import { toast } from "sonner";
+import { auth } from "@/lib/api";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -14,19 +16,42 @@ export default function Login() {
   const handleSendOtp = async () => {
     if (phone.length < 10) return;
     setIsLoading(true);
-    // Simulate OTP send
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    setStep("otp");
+    try {
+      // Check if user exists first
+      const { data } = await auth.checkUser(phone);
+
+      if (!data.exists) {
+        toast.info("User not found. Please register.", {
+          description: "Redirecting you to registration..."
+        });
+        setTimeout(() => navigate("/register", { state: { phone } }), 1500);
+        return;
+      }
+
+      // If user exists, simulate OTP send (in real app, backend would send it)
+      toast.success("OTP Sent", { description: "Use 1234 for testing" });
+      setStep("otp");
+    } catch (error) {
+      toast.error("Error", { description: "Could not verify phone number" });
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleVerifyOtp = async () => {
     if (otp.length < 4) return;
     setIsLoading(true);
-    // Simulate OTP verification
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    navigate("/dashboard");
+    try {
+      const { data } = await auth.login(phone, otp);
+      localStorage.setItem("token", data.access_token);
+      toast.success("Welcome back!");
+      navigate("/dashboard");
+    } catch (error) {
+      toast.error("Login Failed", { description: "Invalid OTP or error logging in" });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -69,7 +94,7 @@ export default function Login() {
                     </label>
                     <Input
                       type="tel"
-                      placeholder="+1 (555) 000-0000"
+                      placeholder="Enter phone number"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       className="h-16 text-xl text-center rounded-2xl border-2 focus:border-primary"
@@ -82,7 +107,7 @@ export default function Login() {
                     className="w-full"
                     size="xl"
                   >
-                    {isLoading ? "Sending..." : "Send Code"}
+                    {isLoading ? "Checking..." : "Continue"}
                     <ArrowRight className="h-5 w-5 ml-2" />
                   </Button>
                 </div>

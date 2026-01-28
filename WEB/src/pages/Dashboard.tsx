@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { VoiceButton } from "@/components/lumi/VoiceButton";
 import { MedicationCard } from "@/components/lumi/MedicationCard";
 import { MedicationStats } from "@/components/lumi/MedicationStats";
@@ -7,87 +7,140 @@ import { NomineeCard } from "@/components/lumi/NomineeCard";
 import { SettingsPanel } from "@/components/lumi/SettingsPanel";
 import { Heart, Sun } from "lucide-react";
 import type { Medication, EmergencyStatus as EmergencyStatusType, Nominee } from "@/types/lumi";
-
-// Mock data
-const mockMedications: Medication[] = [
-  {
-    id: "1",
-    name: "Blood Pressure Tablet",
-    dosage: "10mg",
-    scheduledTime: "8:00 AM",
-    status: "taken",
-    takenAt: "8:05 AM",
-  },
-  {
-    id: "2",
-    name: "Vitamin D3",
-    dosage: "1000 IU",
-    scheduledTime: "9:00 AM",
-    status: "pending",
-  },
-  {
-    id: "3",
-    name: "Calcium Supplement",
-    dosage: "500mg",
-    scheduledTime: "2:00 PM",
-    status: "pending",
-  },
-  {
-    id: "4",
-    name: "Heart Medicine",
-    dosage: "5mg",
-    scheduledTime: "8:00 PM",
-    status: "pending",
-  },
-];
-
-const mockNominees: Nominee[] = [
-  {
-    id: "1",
-    name: "Sarah Johnson",
-    relationship: "Daughter",
-    phone: "+1 (555) 123-4567",
-  },
-  {
-    id: "2",
-    name: "Michael Johnson",
-    relationship: "Son",
-    phone: "+1 (555) 987-6543",
-  },
-];
+import { data, emergency } from "@/lib/api";
+import { toast } from "sonner";
+import { format } from "date-fns";
 
 export default function Dashboard() {
-  const [medications, setMedications] = useState<Medication[]>(mockMedications);
+  const [medications, setMedications] = useState<Medication[]>([]);
+  const [nominees, setNominees] = useState<Nominee[]>([]);
   const [emergencyStatus, setEmergencyStatus] = useState<EmergencyStatusType>({
     isActive: false,
     stage: "none",
-    lastEmergencyTime: "3 days ago",
+    lastEmergencyTime: "No active alerts",
   });
+  const [alertId, setAlertId] = useState<number | null>(null);
   const [isListening, setIsListening] = useState(false);
 
-  const handleMarkTaken = (id: string) => {
-    setMedications((meds) =>
-      meds.map((med) =>
-        med.id === id
-          ? { ...med, status: "taken" as const, takenAt: new Date().toLocaleTimeString() }
-          : med
-      )
-    );
+  useEffect(() => {
+    loadDashboardData();
+    checkEmergencyStatus();
+  }, []);
+
+  const loadDashboardData = async () => {
+    try {
+      const today = format(new Date(), 'yyyy-MM-dd');
+
+      const [medsRes, logsRes, nomineesRes] = await Promise.all([
+        data.getMedications(),
+        data.getMedicationLogs(today, today),
+        data.getNominees()
+      ]);
+
+      // Map backend data to frontend types
+      const mappedMeds: Medication[] = medsRes.data.map(m => {
+        const log = logsRes.data.find(l => l.medication_id === m.id);
+        return {
+          id: m.id.toString(),
+          name: m.name,
+          dosage: m.dosage,
+          scheduledTime: m.scheduled_time, // Backend snake_case
+          status: log ? (log.status as any) : 'pending',
+          takenAt: log?.taken_at
+        };
+      });
+
+      const mappedNominees: Nominee[] = nomineesRes.data.map(n => ({
+        id: n.id.toString(),
+        name: n.name,
+        relationship: n.relationship,
+        phone: n.phone
+      }));
+
+      setMedications(mappedMeds);
+      setNominees(mappedNominees);
+
+    } catch (error) {
+      console.error("Failed to load dashboard data", error);
+      toast.error("Could not load data");
+    }
   };
 
-  const handleTriggerEmergency = () => {
-    setEmergencyStatus({
-      isActive: true,
-      stage: "voice_alert",
-    });
+  const checkEmergencyStatus = async () => {
+    try {
+      const { data } = await emergency.getActive();
+      if (data && data.is_active) {
+        setEmergencyStatus({
+          isActive: true,
+          stage: data.stage as any,
+          lastEmergencyTime: new Date(data.created_at).toLocaleTimeString()
+        });
+        setAlertId(data.id);
+      }
+    } catch (e) {
+      // No active emergency, logic relies on 404 or empty
+    }
   };
 
-  const handleCancelEmergency = () => {
-    setEmergencyStatus({
-      isActive: false,
-      stage: "none",
-      lastEmergencyTime: "Just now",
-    });
+  const handleMarkTaken = async (id: string) => {
+    try {
+      // Optimistic update
+      setMedications((meds) =>
+        meds.map((med) =>
+          med.id === id
+            ? { ...med, status: "taken" as const, takenAt: new Date().toLocaleTimeString() }
+            : med
+        )
+      );
+
+      const medId = parseInt(id);
+      const today = format(new Date(), 'yyyy-MM-dd');
+      await data.recordCompliance(medId, today, 'taken', new Date().toISOString());
+      toast.success("Medication recorded");
+
+    } catch (error) {
+      toast.error("Failed to update status");
+      loadDashboardData(); // Revert on error
+    }
+  };
+
+  const handleTriggerEmergency = async () => {
+    try {
+      setEmergencyStatus({
+        isActive: true,
+        stage: "voice_alert",
+      });
+      const { data } = await emergency.trigger("voice_alert");
+      setAlertId(data.id);
+      toast.error("Emergency Alert Triggered!");
+    } catch (error) {
+      toast.error("Failed to trigger emergency");
+    }
+  };
+
+  const handleCancelEmergency = async () => {
+    if (!alertId) {
+      // Local only fallback
+      setEmergencyStatus({
+        isActive: false,
+        stage: "none",
+        lastEmergencyTime: "Just now",
+      });
+      return;
+    }
+
+    try {
+      await emergency.resolve(alertId);
+      setEmergencyStatus({
+        isActive: false,
+        stage: "none",
+        lastEmergencyTime: "Resolved just now",
+      });
+      setAlertId(null);
+      toast.success("Emergency Cancelled");
+    } catch (error) {
+      toast.error("Failed to resolve emergency");
+    }
   };
 
   const stats = {
@@ -134,15 +187,19 @@ export default function Dashboard() {
               <h2 className="text-xl font-bold text-foreground font-display mb-4">
                 Today's Medications
               </h2>
-              <div className="space-y-3">
-                {medications.map((medication) => (
-                  <MedicationCard
-                    key={medication.id}
-                    medication={medication}
-                    onMarkTaken={handleMarkTaken}
-                  />
-                ))}
-              </div>
+              {medications.length === 0 ? (
+                <p className="text-muted-foreground">No medications for today.</p>
+              ) : (
+                <div className="space-y-3">
+                  {medications.map((medication) => (
+                    <MedicationCard
+                      key={medication.id}
+                      medication={medication}
+                      onMarkTaken={handleMarkTaken}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* Medication Stats */}
@@ -170,11 +227,15 @@ export default function Dashboard() {
               <h2 className="text-xl font-bold text-foreground font-display mb-4">
                 Your Family
               </h2>
-              <div className="space-y-3">
-                {mockNominees.map((nominee) => (
-                  <NomineeCard key={nominee.id} nominee={nominee} />
-                ))}
-              </div>
+              {nominees.length === 0 ? (
+                <p className="text-muted-foreground">No family members added.</p>
+              ) : (
+                <div className="space-y-3">
+                  {nominees.map((nominee) => (
+                    <NomineeCard key={nominee.id} nominee={nominee} />
+                  ))}
+                </div>
+              )}
             </section>
           </div>
 

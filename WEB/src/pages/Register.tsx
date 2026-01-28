@@ -3,13 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Heart, User, Phone, MapPin, Stethoscope, Users, ArrowRight, ArrowLeft, Check } from "lucide-react";
+import { toast } from "sonner";
+import { auth, data } from "@/lib/api";
 
 type Step = "personal" | "health" | "nominees" | "complete";
 
 interface FormData {
   name: string;
   phone: string;
-  age: string;
+  dob: string;
   bloodGroup: string;
   address: string;
   healthIssues: string;
@@ -24,10 +26,11 @@ interface FormData {
 export default function Register() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("personal");
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState<FormData>({
     name: "",
     phone: "",
-    age: "",
+    dob: "",
     bloodGroup: "",
     address: "",
     healthIssues: "",
@@ -55,6 +58,15 @@ export default function Register() {
   const handleNext = () => {
     const stepOrder: Step[] = ["personal", "health", "nominees", "complete"];
     const currentIndex = stepOrder.indexOf(step);
+
+    // Validation
+    if (step === "personal") {
+      if (!formData.name || !formData.phone || !formData.dob) {
+        toast.error("Please fill in all required fields");
+        return;
+      }
+    }
+
     if (currentIndex < stepOrder.length - 1) {
       setStep(stepOrder[currentIndex + 1]);
     }
@@ -68,8 +80,48 @@ export default function Register() {
     }
   };
 
-  const handleComplete = () => {
-    navigate("/dashboard");
+  const handleComplete = async () => {
+    setIsLoading(true);
+    try {
+      // 1. Register User
+      const { data: authData } = await auth.register({
+        fullname: formData.name,
+        phone: formData.phone,
+        dob: formData.dob,
+        blood_group: formData.bloodGroup,
+        address: formData.address
+      });
+
+      localStorage.setItem("token", authData.access_token);
+
+      // 2. Add Nominees
+      if (formData.nominee1Name) {
+        await data.createNominee({
+          name: formData.nominee1Name,
+          relationship: formData.nominee1Relationship,
+          phone: formData.nominee1Phone
+        });
+      }
+
+      if (formData.nominee2Name) {
+        await data.createNominee({
+          name: formData.nominee2Name,
+          relationship: formData.nominee2Relationship,
+          phone: formData.nominee2Phone
+        });
+      }
+
+      toast.success("Registration Successful!");
+      navigate("/dashboard");
+
+    } catch (error: any) {
+      toast.error("Registration Failed", {
+        description: error.response?.data?.detail || "Please check your details and try again"
+      });
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -93,19 +145,17 @@ export default function Register() {
           {steps.map((s, index) => (
             <div key={s.key} className="flex items-center">
               <div
-                className={`flex h-10 w-10 items-center justify-center rounded-full transition-all ${
-                  index <= currentStepIndex
+                className={`flex h-10 w-10 items-center justify-center rounded-full transition-all ${index <= currentStepIndex
                     ? "bg-primary text-primary-foreground"
                     : "bg-muted text-muted-foreground"
-                }`}
+                  }`}
               >
                 <s.icon className="h-5 w-5" />
               </div>
               {index < steps.length - 1 && (
                 <div
-                  className={`h-1 w-12 sm:w-16 mx-2 rounded-full transition-all ${
-                    index < currentStepIndex ? "bg-primary" : "bg-muted"
-                  }`}
+                  className={`h-1 w-12 sm:w-16 mx-2 rounded-full transition-all ${index < currentStepIndex ? "bg-primary" : "bg-muted"
+                    }`}
                 />
               )}
             </div>
@@ -133,7 +183,7 @@ export default function Register() {
 
                 <div className="space-y-4">
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-foreground">Full Name</label>
+                    <label className="text-sm font-medium text-foreground">Full Name *</label>
                     <Input
                       placeholder="Enter your name"
                       value={formData.name}
@@ -143,7 +193,7 @@ export default function Register() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-foreground">Phone Number</label>
+                    <label className="text-sm font-medium text-foreground">Phone Number *</label>
                     <Input
                       type="tel"
                       placeholder="+1 (555) 000-0000"
@@ -155,12 +205,11 @@ export default function Register() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium text-foreground">Age</label>
+                      <label className="text-sm font-medium text-foreground">Date of Birth *</label>
                       <Input
-                        type="number"
-                        placeholder="65"
-                        value={formData.age}
-                        onChange={(e) => updateField("age", e.target.value)}
+                        type="date"
+                        value={formData.dob}
+                        onChange={(e) => updateField("dob", e.target.value)}
                         className="h-14 rounded-xl border-2"
                       />
                     </div>
@@ -304,15 +353,20 @@ export default function Register() {
                     <Check className="h-12 w-12 text-success" />
                   </div>
                   <h2 className="text-2xl font-bold text-foreground font-display">
-                    You're All Set!
+                    You're almost there!
                   </h2>
                   <p className="text-muted-foreground mt-2 max-w-xs mx-auto">
-                    Welcome to LUMI. Your care companion is ready to help you stay safe and independent.
+                    Click below to create your account and start using LUMI.
                   </p>
                 </div>
 
-                <Button onClick={handleComplete} className="w-full" size="xl">
-                  Go to Dashboard
+                <Button
+                  onClick={handleComplete}
+                  className="w-full"
+                  size="xl"
+                  disabled={isLoading}
+                >
+                  {isLoading ? "Creating Account..." : "Create Account"}
                   <ArrowRight className="h-5 w-5 ml-2" />
                 </Button>
               </>
